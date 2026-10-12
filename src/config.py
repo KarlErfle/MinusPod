@@ -1576,8 +1576,24 @@ CHUNK_DEFAULT_DURATION_SECONDS = 1800  # Default if memory detection fails (30 m
 API_CHUNK_DURATION_SECONDS = 600
 
 # Whisper backend identifiers
+# Seconds the queue must stay empty before the local transcription model is unloaded.
+LOCAL_MODEL_IDLE_UNLOAD_SECONDS = 300
+
 WHISPER_BACKEND_LOCAL = 'local'
 WHISPER_BACKEND_API = 'openai-api'
+WHISPER_BACKEND_PARAKEET = 'parakeet'
+WHISPER_LOCAL_BACKENDS = (WHISPER_BACKEND_LOCAL, WHISPER_BACKEND_PARAKEET)
+WHISPER_BACKENDS = (WHISPER_BACKEND_LOCAL, WHISPER_BACKEND_API, WHISPER_BACKEND_PARAKEET)
+
+PARAKEET_MODEL_NAME = 'nemo-parakeet-tdt-0.6b-v3'
+PARAKEET_MODEL_REPO = 'istupakov/parakeet-tdt-0.6b-v3-onnx'  # Hub repo onnx-asr maps the model name to
+# Parakeet decode tuning (#834).
+PARAKEET_WINDOW_S = 30.0  # No dropped speech at 30 s windows
+PARAKEET_OVERLAP_S = 2.0
+PARAKEET_SEGMENT_MAX_S = 25.0
+PARAKEET_SEGMENT_PAUSE_S = 1.0  # Pause that starts a new segment
+PARAKEET_WORD_MAX_S = 1.5  # Cap on a word's end past its start
+PARAKEET_TOKEN_STEP_S = 0.08  # Token timestamp resolution
 
 # Failover targets by API name (#806); shared by failover and webhook_service.
 FAILOVER_API_TARGET_NAMES = {'llm-a': 'llm:primary', 'llm-b': 'llm:secondary', 'transcriber': 'whisper'}

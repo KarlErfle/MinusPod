@@ -2794,6 +2794,7 @@ class AdDetector:
             'span_estimated': span_estimated,
             'text_start': getattr(match, 'text_start', None),
             'text_end': getattr(match, 'text_end', None),
+            'content_end': getattr(match, 'content_end', None),
         }
         if (detection_stage == 'text_pattern' and span_estimated
                 and not getattr(match, 'defined', False)):
@@ -3311,7 +3312,11 @@ class AdDetector:
                         last[_CATEGORY_SPAN] = cur_span
 
                 # Merge - prefer pattern-detected metadata
-                if current['end'] > last['end']:
+                if release_transcript and td_last:
+                    # A gap only corroborates: the detection's edges win.
+                    inherit_edge(last, current, 'start')
+                    inherit_edge(last, current, 'end')
+                elif current['end'] > last['end'] and not release_transcript:
                     inherit_edge(last, current, 'end')
                 invalidate_quote_alignment(last)
                 invalidate_word_timed_edges(last)
@@ -3355,6 +3360,9 @@ class AdDetector:
                     for key in ('text_start', 'text_end'):
                         if key in current:
                             last[key] = current[key]
+                    # A member without a content match must not erase the bound.
+                    if current.get('content_end') is not None:
+                        last['content_end'] = current['content_end']
 
                 # Keep sponsor and reason as a consistent pair from the SAME
                 # member, so a merged marker never shows one ad's sponsor with

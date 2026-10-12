@@ -153,21 +153,45 @@ def test_exhaustion_records_failed_outcome_and_releases_gpu_memory(monkeypatch):
     assert len(clear_calls) >= 3
 
 
-def test_chunked_cuda_exhaustion_preserves_permanent_error(monkeypatch):
+def _chunked_transcriber(chunk_result, stats):
+    """A Transcriber whose per-chunk decode is stubbed, for the chunked-loop tests."""
     t = Transcriber.__new__(Transcriber)
     t.get_audio_duration = MagicMock(return_value=3600.0)
-    t.transcribe = MagicMock(return_value=None)
+    t.transcribe = MagicMock(return_value=chunk_result)
     t.filter_hallucinations = lambda segments: segments
-    t.last_transcription_stats = {'error': 'CUDA failed with error out of memory'}
+    t.last_transcription_stats = stats
+    return t
 
-    def extract(*args, **kwargs):
-        handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        handle.close()
-        return handle.name
+
+def _extract_chunk(*args, **kwargs):
+    handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+    handle.close()
+    return handle.name
+
+
+def test_chunked_parakeet_warm_up_never_loads_whisper(monkeypatch):
+    """The warm-up that overlaps chunk extraction loads the selected backend only."""
+    t = _chunked_transcriber([], {})
+    monkeypatch.setattr(transcriber_mod, '_require_local_transcription', lambda backend=None: None)
+
+    with patch('transcriber.extract_audio_chunk', side_effect=_extract_chunk), \
+            patch('transcriber._get_whisper_settings',
+                  return_value={'backend': 'parakeet'}), \
+            patch('transcriber.clear_gpu_memory'), \
+            patch.object(transcriber_mod.WhisperModelSingleton, 'get_batched_pipeline',
+                         side_effect=AssertionError('faster-whisper must not load')), \
+            patch.object(transcriber_mod.ParakeetModelSingleton, 'get_instance') as warm_up:
+        t.transcribe_chunked('/tmp/input.mp3')
+
+    warm_up.assert_called_once()
+
+
+def test_chunked_cuda_exhaustion_preserves_permanent_error(monkeypatch):
+    t = _chunked_transcriber(None, {'error': 'CUDA failed with error out of memory'})
 
     with patch('transcriber.calculate_optimal_chunk_duration',
                return_value=(1800.0, 'test')), \
-            patch('transcriber.extract_audio_chunk', side_effect=extract), \
+            patch('transcriber.extract_audio_chunk', side_effect=_extract_chunk), \
             patch('transcriber._get_whisper_settings',
                   return_value={'backend': 'local'}), \
             patch('transcriber.clear_gpu_memory'), \
@@ -236,20 +260,12 @@ def test_transcribe_propagates_a_model_load_failure(monkeypatch):
 
 
 def _chunked(transcribe):
-    t = Transcriber.__new__(Transcriber)
-    t.get_audio_duration = MagicMock(return_value=3600.0)
+    t = _chunked_transcriber(None, {})
     t.transcribe = transcribe
-    t.filter_hallucinations = lambda segments: segments
-    t.last_transcription_stats = {}
-
-    def extract(*args, **kwargs):
-        handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        handle.close()
-        return handle.name
 
     with patch('transcriber.calculate_optimal_chunk_duration',
                return_value=(1800.0, 'test')), \
-            patch('transcriber.extract_audio_chunk', side_effect=extract), \
+            patch('transcriber.extract_audio_chunk', side_effect=_extract_chunk), \
             patch('transcriber._get_whisper_settings',
                   return_value={'backend': 'local'}), \
             patch('transcriber.clear_gpu_memory'), \
@@ -288,7 +304,7 @@ def test_model_load_failure_is_retried_not_permanently_failed(caplog):
         status = _handle_failure(ModelLoadError('Whisper model could not be loaded'))
     assert status['status'] == processing.EpisodeStatus.FAILED.value
     assert status['retry_count'] == 1
-    assert 'Whisper model failed to load, will retry' in caplog.text
+    assert 'Transcription model failed to load, will retry' in caplog.text
 
 
 def test_model_load_failure_respects_the_retry_cap():
@@ -513,3 +529,57 @@ def test_api_backend_health_uses_a_cached_probe_not_a_fresh_request(monkeypatch)
         transcriber_mod._health_cache.delete('http://whisper.invalid/v1')
         db.set_setting('whisper_backend', transcriber_mod.WHISPER_BACKEND_LOCAL)
         db.set_setting('whisper_api_base_url', '')
+
+
+def test_health_reports_parakeet_backend(monkeypatch):
+    _clear_outcome_state(monkeypatch)
+    monkeypatch.setenv('WHISPER_DEVICE', 'cpu')
+    monkeypatch.setattr(transcriber_mod.parakeet_transcriber, 'parakeet_available', lambda: True)
+    db = _db()
+    try:
+        db.set_setting('whisper_backend', transcriber_mod.WHISPER_BACKEND_PARAKEET)
+        health = transcriber_mod.get_transcriber_health()
+        assert health['backend'] == 'parakeet'
+        assert health['available'] is True
+        monkeypatch.setattr(transcriber_mod.parakeet_transcriber, 'parakeet_available', lambda: False)
+        health = transcriber_mod.get_transcriber_health()
+        assert health['available'] is False
+        assert 'onnx-asr' in health['reason']
+    finally:
+        db.set_setting('whisper_backend', transcriber_mod.WHISPER_BACKEND_LOCAL)
+
+
+def test_health_ignores_other_backend_outcome(monkeypatch):
+    _clear_outcome_state(monkeypatch)
+    monkeypatch.setenv('WHISPER_DEVICE', 'cpu')
+    monkeypatch.setattr(transcriber_mod.parakeet_transcriber, 'parakeet_available', lambda: True)
+    transcriber_mod._record_local_transcription_outcome(
+        {'outcome': 'success', 'backend': transcriber_mod.WHISPER_BACKEND_LOCAL, 'device': 'cpu'})
+    health = transcriber_mod.get_local_transcriber_health('parakeet')
+    assert health['lastOutcome'] is None
+    assert health['available'] is True
+
+
+def test_transcribe_routes_to_parakeet_decoder(monkeypatch, tmp_path):
+    import wave
+    wav = tmp_path / 'p.wav'
+    with wave.open(str(wav), 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b'\x00\x00' * 1600)
+    _clear_outcome_state(monkeypatch)
+    monkeypatch.setenv('WHISPER_DEVICE', 'cpu')
+    monkeypatch.setattr(transcriber_mod, '_require_local_transcription', lambda backend=None: None)
+    seg = {'start': 0.0, 'end': 1.0, 'text': 'Hello there', 'words': []}
+    decode = MagicMock(return_value=[seg])
+    monkeypatch.setattr(transcriber_mod.parakeet_transcriber, 'decode', decode)
+    settings = {'backend': 'parakeet', 'language': 'en'}
+    with patch.object(transcriber_mod.WhisperModelSingleton, 'get_batched_pipeline',
+                      side_effect=AssertionError('faster-whisper must not load')):
+        t = transcriber_mod.Transcriber()
+        result = t.transcribe(str(wav), preprocessed=True, whisper_settings=settings)
+    assert [s['text'] for s in result] == ['Hello there']
+    decode.assert_called_once_with(str(wav), 'en')
+    assert t.last_transcription_stats['backend'] == 'parakeet'
+    assert t.last_transcription_stats['model'] == 'nemo-parakeet-tdt-0.6b-v3'

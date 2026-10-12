@@ -73,7 +73,7 @@ from utils.time import (
     parse_iso_utc, ranges_overlap, span_inside_any_cut, utc_now_iso,
 )
 from verification_pass import _build_timestamp_map, _map_correction_to_processed, _map_to_original
-from whisper_pool import get_pool, is_background_leader
+from whisper_pool import get_pool, is_background_follower
 from config import (
     log_download_query_enabled,
     resolve_max_boundary_shift,
@@ -568,7 +568,7 @@ def start_background_processing(slug, episode_id, original_url, title, podcast_n
         Tuple of (started: bool, reason: str)
         - (True, "started") if processing was started
         - (False, "already_processing") if this episode is already being processed
-        - (False, "queue_only") if the whisper pool is active and this process is not the leader
+        - (False, "queue_only") if this process is a background follower, not the leader
         - (False, "queue_busy:slug:episode_id") if another episode is processing
         - (False, "rate_limit_paused") while a rate-limit hold is active
     """
@@ -587,9 +587,9 @@ def start_background_processing(slug, episode_id, original_url, title, podcast_n
     if queue.is_processing(slug, episode_id):
         return False, "already_processing"
 
-    # Pool active: only the background leader runs episodes, so every
-    # per-run state lives in one process. Callers enqueue on any refusal.
-    if get_pool().active and not is_background_leader():
+    # Only the background leader runs episodes, so every per-run state and
+    # every GPU model lives in one process. Callers enqueue on any refusal.
+    if is_background_follower():
         return False, "queue_only"
 
     # Rate-limit hold (#696): the one choke point every start goes through,
@@ -694,15 +694,12 @@ def _repair_transcript(slug, episode_id, audio_path, segments, language_override
                        tried=()):
     """Hole then tail no-VAD repair. Returns (segments, added segments, empty holes)."""
     with _measure_run_stage('transcription'):
-        try:
-            holes, empty = _retranscribe_holes_no_vad(
-                audio_path, segments, language_override, tried)
-            if holes:
-                segments = sorted(segments + holes, key=lambda seg: seg['start'])
-            tail = _retranscribe_tail_no_vad(
-                slug, episode_id, audio_path, segments, language_override)
-        finally:
-            transcriber.unload_after_repair()
+        holes, empty = _retranscribe_holes_no_vad(
+            audio_path, segments, language_override, tried)
+        if holes:
+            segments = sorted(segments + holes, key=lambda seg: seg['start'])
+        tail = _retranscribe_tail_no_vad(
+            slug, episode_id, audio_path, segments, language_override)
     added = holes + tail
     _apply_transcript_corrections(slug, episode_id, added)
     return segments + tail, added, empty
@@ -5934,10 +5931,10 @@ def _handle_processing_failure(slug, episode_id, episode_title, podcast_name,
     processing_time = time.time() - start_time
 
     try:
-        from transcriber import WhisperModelSingleton
+        from transcriber import _unload_local_models
         from utils.gpu import clear_gpu_memory
         clear_gpu_memory()
-        WhisperModelSingleton.unload_model()
+        _unload_local_models()
         audio_logger.info(f"[{slug}:{episode_id}] Cleaned up GPU memory after failure")
     except Exception as cleanup_err:
         audio_logger.warning(f"[{slug}:{episode_id}] Failed to clean up GPU memory: {cleanup_err}")
@@ -6049,7 +6046,7 @@ def _handle_processing_failure(slug, episode_id, episode_title, podcast_name,
                 audio_logger.warning(f"[{slug}:{episode_id}] Max retries reached ({MAX_EPISODE_RETRIES}), marking as permanently failed")
             else:
                 new_status = EpisodeStatus.FAILED.value
-                cause = ('Whisper model failed to load' if isinstance(error, ModelLoadError)
+                cause = ('Transcription model failed to load' if isinstance(error, ModelLoadError)
                          else 'Transient error')
                 audio_logger.info(f"[{slug}:{episode_id}] {cause}, will retry (attempt {new_retry_count}/{MAX_EPISODE_RETRIES})")
     else:

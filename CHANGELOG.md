@@ -11,6 +11,83 @@ release notes.
 
 ## [Unreleased]
 
+## [2.100.10] - 2026-10-11
+
+### Fixed
+- Episode processing runs only in the background leader worker. A reprocess or play request that reaches another gunicorn worker is queued instead of started there, so two workers no longer load a transcription model each on the one GPU. The second load was failing Parakeet session creation with an ONNX Runtime allocation error and cost the episode two retries.
+- Chunked transcription on the Parakeet backend no longer loads the Whisper model before decoding. The warm-up that overlaps model loading with chunk extraction loads the selected backend's model.
+- The GPU free-memory check reads device-wide free memory instead of PyTorch's reserved counter, so memory held by ctranslate2 and ONNX Runtime counts.
+- Chunk sizing no longer subtracts the model's base memory again when the model is already resident, since device-wide free memory already excludes it.
+- Parakeet window merging checks every kept word near a seam for a duplicate instead of stopping at the first earlier-timed word. A word whose window-quantized time drifted earlier no longer lets the next duplicate through.
+- The pre-roll heuristic counts a detected ad inside the pre-roll zone as an ad indicator and treats a line that names the podcast as the show intro. A produced pre-roll whose copy carries one URL and a short tagline detection is cut from the episode start instead of rejected as a fragment under the minimum ad length.
+
+## [2.100.9] - 2026-10-11
+
+### Fixed
+- A template ad-break cue that lies inside a text pattern's content match may set the ad edge even when it is farther from the refined edge than the maximum boundary shift, so an outro phrase learned from a shorter read no longer leaves the rest of the read in when the end sting is within the matched text. (#838)
+
+## [2.100.8] - 2026-10-11
+
+### Fixed
+- Text pattern intro and outro refinement keeps an edge when the text it would trim still matches the pattern, so a learned outro phrase that appears mid-read no longer cuts the ad short. (#838)
+- A template ad-break cue that snapped an estimated pattern span's edge counts as a measurement of that edge, so the span up to the cue is cut instead of held for review as an estimated remainder. (#838)
+
+### Changed
+- Documentation presents faster-whisper and Parakeet as the two local transcription backends side by side, with the measured trade-offs and which settings apply to each.
+
+## [2.100.7] - 2026-10-11
+
+### Changed
+- The local transcription model (Whisper or Parakeet) stays loaded while episodes keep processing and unloads 300 seconds after the queue empties, instead of reloading twice per episode.
+
+### Fixed
+- The detection review filter bar keeps Sort beside Reviewer on phones instead of giving it a row of its own.
+
+## [2.100.6] - 2026-10-11
+
+### Fixed
+- A transcript-differential gap that folds into a detected ad only corroborates it; the merged ad keeps the detection's own start and end instead of widening to the gap's alignment-granular edges. (#838)
+
+## [2.100.5] - 2026-10-11
+
+### Fixed
+- Parakeet window merging drops a repeated phrase at a window boundary by comparing words, not only timestamps, so overlapping decodes no longer leave a duplicated phrase about every fifty boundaries.
+
+## [2.100.4] - 2026-10-11
+
+### Fixed
+- Parakeet keeps the word boundary the tokenizer emits before numbers, so "Android 16" no longer comes out as "Android16".
+
+## [2.100.3] - 2026-10-11
+
+### Fixed
+- Parakeet word boundaries follow the space-prefixed tokens onnx-asr returns, so transcripts carry one word per spoken word instead of one word per 30 second window and no window is dropped at the overlap.
+
+## [2.100.2] - 2026-10-11
+
+### Fixed
+- The Parakeet model is downloaded into its cache directory before loading. Pointing onnx-asr at an existing directory puts it in offline mode, so 2.100.1 never fetched the files.
+
+## [2.100.1] - 2026-10-11
+
+### Fixed
+- Parakeet model files download into a plain directory under the data cache instead of the symlinked Hugging Face hub layout, which ONNX Runtime 1.24 rejects when validating the encoder's external weights.
+
+## [2.100.0] - 2026-10-11
+
+### Added
+- Parakeet TDT 0.6B v3 as a built-in transcription backend, selectable under Transcription or with `WHISPER_BACKEND=parakeet`. It runs in-process through ONNX Runtime, on CUDA in the GPU image and on CPU in the CPU image, and can also be the failover transcriber. English transcripts drop words in non-Latin scripts. (#834)
+- LLM calls section on the Stats page, served by `GET /stats/llm`: calls, requests, outcomes, average call and request time, token usage, known cost and a per-phase breakdown, using the same filters as System One calls.
+- System One stats report the average dispatch time per HTTP request (`dispatchLatencyMsAverage`); the Stats card shows that instead of the running total.
+
+### Changed
+- Cost labels on Stats, History, feed stats and System Status drop the "LLM" prefix because the ledger covers LLM and System One spend.
+
+### Fixed
+- Text pattern intro and outro refinement maps a phrase hit to the matching word's timestamp instead of the containing transcript segment's edge, so a 20 to 30 second segment no longer pulls an ad start into show content. Segment edges remain the fallback when word timestamps are missing. (#838)
+- Gap repair logs a zero-segment transcription response at debug instead of warning, since a silent span legitimately returns no speech.
+- The corrections endpoint in `openapi.yaml` documents the flat correction object the server reads, the fields each correction type returns, and the 409 for a kept segment, instead of a `corrections` array the server never accepted.
+
 ## [2.99.6] - 2026-10-11
 
 ### Fixed
