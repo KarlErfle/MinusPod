@@ -3854,7 +3854,10 @@ def update_provider_budget():
         })
     with db.transaction(immediate=True) as conn:
         for key, value in values.items():
-            db._upsert_setting(conn, key, value, is_default=False)
+            if value is None:
+                conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+            else:
+                db._upsert_setting(conn, key, value, is_default=False)
     return json_response(_provider_budget_payload())
 
 
