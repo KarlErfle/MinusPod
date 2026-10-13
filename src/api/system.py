@@ -208,7 +208,7 @@ def get_system_status():
         # transcription, not the process (episodes re-queue as transient).
         # Reports the configured backend, since the local reading says
         # nothing when transcription runs on a remote API.
-        'transcriber': transcriber.get_transcriber_health(),
+        'transcriber': transcriber.remote.get_transcriber_health(),
         'failover': {'targets': targets_view(), 'probes': probes_view()},
     })
 
@@ -516,7 +516,7 @@ def export_config():
     from urllib.parse import urlsplit
 
     from api.feeds import get_feeds_export_list
-    from api.settings import _build_settings_payload
+    from api.settings.core import _build_settings_payload
     from utils.config_export import build_domain_identity, redact_config
     from utils.gpu import get_gpu_device_name
     from webhook_service import load_webhooks

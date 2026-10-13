@@ -10,6 +10,7 @@ from api import (
     api, error_response, log_request, json_response,
     get_database,
 )
+import episode_runs
 # The ledger's own billable predicate, so this endpoint lists exactly the rows
 # the totals are summed from rather than re-deriving the rule.
 from database.stats import _ledger_row_is_billable
@@ -223,7 +224,6 @@ def get_episode_cost_runs():
     """Per-run, per-phase cost breakdown for one episode, for the expandable
     Episode-costs row. Same run shape as the episode detail page so both
     surfaces render an identical table."""
-    from api.episodes import _processing_runs
     slug = request.args.get('slug')
     episode_id = request.args.get('episodeId')
     if not slug or not episode_id:
@@ -232,7 +232,7 @@ def get_episode_cost_runs():
     episode = db.get_episode(slug, episode_id)
     if not episode:
         return error_response('Episode not found', 404)
-    return json_response({'runs': _processing_runs(db, episode)})
+    return json_response({'runs': episode_runs.processing_runs(db, episode)})
 
 
 @api.route('/stats/ledger-filter-options', methods=['GET'])
